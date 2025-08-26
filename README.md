@@ -2,7 +2,7 @@
 
 DoclingSharp is a .NET 8 client library for interacting with [Docling](https://github.com/your-docling-repo) (version >1.0.1). It provides two core features:
 
-- **DoclingClient** – xtracts content from documents uploaded as `IFormFile` objects via the Docling API.  
+- **DoclingClient** – Extracts content from documents uploaded as `IFormFile` objects via the Docling API.  
 - **DocumentChunker** – for splitting document content into manageable chunks suitable for embeddings or other processing.
 
 ---
