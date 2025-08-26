@@ -2,7 +2,7 @@
 
 DoclingSharp is a .NET 8 client library for interacting with [Docling](https://github.com/your-docling-repo) (version >1.0.1). It provides two core features:
 
-- **DoclingClient** – for extracting content from documents via the Docling API.  
+- **DoclingClient** – xtracts content from documents uploaded as `IFormFile` objects via the Docling API.  
 - **DocumentChunker** – for splitting document content into manageable chunks suitable for embeddings or other processing.
 
 ---
@@ -31,7 +31,7 @@ This sets up both `DoclingClient` and `DocumentChunker` with your preferred conf
 ### Extract and chunk documents
 In a controller, service, or background task:
 ```csharp
-// Extract content from a file using Docling
+// Extract content from an uploaded IFormFile
 var result = await _doclingClient.ExtractDocumentContentAsync(file);
 
 // Split the content into chunks for embedding or further processing
@@ -40,7 +40,7 @@ var documentChunks = _documentChunker.ChunkDocument(result.Markdown);
 // Pass the chunks to your embedding engine
 ```
 ### Features
-- ExtractDocumentContentAsync: Handles PDF, DOCX, and other supported formats. Returns structured DoclingResult including Markdown, text, JSON, and HTML versions.
+- ExtractDocumentContentAsync: Works with IFormFile inputs for PDFs, DOCX, and other supported formats. Returns structured DoclingResult including Markdown, plain text, JSON, and HTML.
 - DocumentChunker: Splits documents into overlapping chunks to ensure no content is lost between segments, making it ideal for embedding workflows.
 - Fully integrated with IHttpClientFactory and IOptions<T> for clean dependency injection.
 - Configurable chunk sizes and overlap.
