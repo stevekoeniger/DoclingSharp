@@ -1,0 +1,53 @@
+name: Publish NuGet Package
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      # Auto-calculate version
+      - name: Set version
+        id: version
+        run: |
+          # Major version = .NET version
+          major=8
+
+          # Minor = commit count on main
+          minor=$(git rev-list --count HEAD)
+
+          # Patch = number of tags matching v*.*.*
+          patch=$(git tag --list "v$major.*.*" | wc -l)
+
+          echo "VERSION=$major.$minor.$patch" >> $GITHUB_ENV
+          echo "Version set to $major.$minor.$patch"
+
+      - name: Build
+        run: dotnet build --configuration Release /p:Version=${{ env.VERSION }}
+
+      - name: Pack NuGet
+        run: dotnet pack --configuration Release --no-build --output ./nupkg /p:PackageVersion=${{ env.VERSION }}
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v1
+
+      - name: Push package
+        run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
