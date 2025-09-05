@@ -1,44 +1,37 @@
-name: Publish NuGet Package
+name: Build and Publish NuGet Package
 
 on:
   push:
     branches:
       - main
   workflow_dispatch:
-  release:
-    types: [published]
 
 jobs:
-  build-and-publish:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v3
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
       - name: Restore dependencies
         run: dotnet restore
 
-      # Auto-calculate version
       - name: Set version
         id: version
         run: |
-          # Major version = .NET version
           major=8
-
-          # Minor = commit count on main
           minor=$(git rev-list --count HEAD)
-
-          # Patch = number of tags matching v*.*.*
-          patch=$(git tag --list "v$major.*.*" | wc -l)
-
+          patch=${GITHUB_RUN_NUMBER}
           echo "VERSION=$major.$minor.$patch" >> $GITHUB_ENV
-          echo "Version set to $major.$minor.$patch"
+          echo "Version = $major.$minor.$patch"
 
       - name: Build
         run: dotnet build --configuration Release /p:Version=${{ env.VERSION }}
@@ -46,8 +39,28 @@ jobs:
       - name: Pack NuGet
         run: dotnet pack --configuration Release --no-build --output ./nupkg /p:PackageVersion=${{ env.VERSION }}
 
-      - name: Setup NuGet
-        uses: NuGet/setup-nuget@v1
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: ./nupkg/*.nupkg
 
-      - name: Push package
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-package
+          path: ./nupkg
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Push package to NuGet
         run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
