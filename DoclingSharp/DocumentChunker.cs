@@ -30,18 +30,19 @@ namespace DoclingSharp
         public DocumentChunker(IHttpClientFactory httpClientFactory, IOptions<DoclingOptions> options)
             : base(httpClientFactory, options) { }
 
+
         /// <summary>
-        /// Chunk a document
+        /// Break a string into chunks.
         /// </summary>
-        /// <param name="text">The text to chunk.</param>
-        /// <returns></returns>
+        /// <param name="text">The string to break into chunks.</param>
+        /// <returns>An <see cref="IReadOnlyList{T}"/> of <see cref="TextChunk"/>.</returns>
         public IReadOnlyList<TextChunk> ChunkDocument(string text)
         {
             if (string.IsNullOrEmpty(text))
                 return Array.Empty<TextChunk>();
 
             int len = text.Length;
-            int estChunks = (len / ChunkMaxCharacters) + 2;
+            int estChunks = (len / Math.Max(1, ChunkMaxCharacters - ChunkCharacterOverlap)) + 2;
             var result = new List<TextChunk>(estChunks);
 
             var chars = text.AsSpan();
@@ -49,120 +50,167 @@ namespace DoclingSharp
 
             while (i < len)
             {
-                int end = i + ChunkMaxCharacters;
-                if (end > len) end = len;
+                // Calculate the maximum end position for this chunk
+                int maxEnd = Math.Min(i + ChunkMaxCharacters, len);
+                int cut = maxEnd;
 
-                // --- SIMD newline search (backward) ---
-                int cut = end;
-                int searchLen = end - i;
-                int vecSize = Vector<ushort>.Count;
-                var nlVec = new Vector<ushort>('\n');
-
-                for (int j = searchLen - vecSize; j >= 0; j -= vecSize)
+                // If we're not at the end of the string, try to find a better breaking point
+                if (maxEnd < len)
                 {
-                    var ushortSpan = MemoryMarshal.Cast<char, ushort>(chars.Slice(i + j, vecSize));
-                    var slice = new Vector<ushort>(ushortSpan);
-                    var eq = Vector.Equals(slice, nlVec);
+                    // Look for newline within the chunk (backward from maxEnd)
+                    cut = FindLastNewline(chars, i, maxEnd);
 
-                    if (!eq.Equals(Vector<ushort>.Zero))
-                    {
-                        // scan backwards in this block to find *last* newline
-                        for (int k = vecSize - 1; k >= 0; k--)
-                        {
-                            if (chars[i + j + k] == '\n')
-                            {
-                                cut = i + j + k;
-                                j = -1; // break outer loop
-                                break;
-                            }
-                        }
-                    }
+                    // If no newline found, use maxEnd
+                    if (cut == -1)
+                        cut = maxEnd;
                 }
 
-                // --- SIMD TrimStart ---
-                int startTrim = i;
-                {
-                    int remaining = cut - startTrim;
-                    while (remaining >= vecSize)
-                    {
-                        var ushortSpan = MemoryMarshal.Cast<char, ushort>(chars.Slice(startTrim, vecSize));
-                        var vec = new Vector<ushort>(ushortSpan);
+                // SIMD-optimized trimming
+                var (startTrim, endTrim) = TrimWhitespace(chars, i, cut);
 
-                        if (!AllWhitespace(vec))
-                        {
-                            for (int k = 0; k < vecSize; k++)
-                            {
-                                if (!IsWhiteSpace((char)ushortSpan[k]))
-                                {
-                                    startTrim += k;
-                                    remaining = 0; // done
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-
-                        startTrim += vecSize;
-                        remaining -= vecSize;
-                    }
-
-                    while (startTrim < cut && IsWhiteSpace(chars[startTrim]))
-                        startTrim++;
-                }
-
-                // --- SIMD TrimEnd ---
-                int endTrim = cut - 1;
-                {
-                    int remaining = endTrim - startTrim + 1;
-                    while (remaining >= vecSize)
-                    {
-                        var ushortSpan = MemoryMarshal.Cast<char, ushort>(chars.Slice(endTrim - vecSize + 1, vecSize));
-                        var vec = new Vector<ushort>(ushortSpan);
-
-                        if (!AllWhitespace(vec))
-                        {
-                            for (int k = vecSize - 1; k >= 0; k--)
-                            {
-                                if (!IsWhiteSpace((char)ushortSpan[k]))
-                                {
-                                    endTrim = endTrim - (vecSize - 1 - k);
-                                    remaining = 0; // done
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-
-                        endTrim -= vecSize;
-                        remaining -= vecSize;
-                    }
-
-                    while (endTrim >= startTrim && IsWhiteSpace(chars[endTrim]))
-                        endTrim--;
-                }
-
+                // Add chunk if valid
                 if (startTrim <= endTrim)
                 {
                     int sliceLen = endTrim - startTrim + 1;
-                    result.Add(new TextChunk(text.Substring(startTrim, sliceLen), startTrim, cut));
+                    result.Add(new TextChunk(text.Substring(startTrim, sliceLen), startTrim, endTrim + 1));
                 }
 
-                // advance
-                if (cut >= len)
-                {
-                    // we consumed the tail, break out
-                    break;
-                }
+                // Advance with overlap: next chunk starts at (current_end + 1 - overlap)
+                i = cut + 1 - ChunkCharacterOverlap;
+                if (i <= startTrim) // Prevent infinite loops
+                    i = startTrim + 1;
 
-                i = cut + (ChunkMaxCharacters - ChunkCharacterOverlap);
-                if (i >= len)
-                {
-                    // ensure we don't miss the last partial bit
-                    i = len;
-                }
+                if (i >= len) break;
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Finds the last newline character within the specified range using SIMD optimization.
+        /// Searches backward from maxEnd to start for the rightmost '\n' character.
+        /// </summary>
+        /// <param name="chars">The character span to search within</param>
+        /// <param name="start">The starting position (inclusive) to search from</param>
+        /// <param name="maxEnd">The ending position (exclusive) to search to</param>
+        /// <returns>The index of the last newline character found, or -1 if none found</returns>
+        private static int FindLastNewline(ReadOnlySpan<char> chars, int start, int maxEnd)
+        {
+            int vecSize = Vector<ushort>.Count;
+            var nlVec = new Vector<ushort>('\n');
+            int searchStart = start;
+            int searchLen = maxEnd - start;
+
+            // SIMD search for newlines
+            for (int j = searchLen - vecSize; j >= 0; j -= vecSize)
+            {
+                if (searchStart + j + vecSize > chars.Length) continue;
+
+                var ushortSpan = MemoryMarshal.Cast<char, ushort>(chars.Slice(searchStart + j, vecSize));
+                var slice = new Vector<ushort>(ushortSpan);
+                var eq = Vector.Equals(slice, nlVec);
+
+                if (!eq.Equals(Vector<ushort>.Zero))
+                {
+                    // Found newlines in this vector, find the last one
+                    for (int k = vecSize - 1; k >= 0; k--)
+                    {
+                        if (chars[searchStart + j + k] == '\n')
+                        {
+                            return searchStart + j + k;
+                        }
+                    }
+                }
+            }
+
+            // Fallback: scalar search for remaining chars
+            for (int j = (searchLen % vecSize) - 1; j >= 0; j--)
+            {
+                if (chars[searchStart + j] == '\n')
+                    return searchStart + j;
+            }
+
+            return -1; // No newline found
+        }
+
+        /// <summary>
+        /// Trims whitespace from both ends of the specified character range using SIMD optimization.
+        /// Uses vectorized operations to quickly skip over whitespace characters at the beginning
+        /// and end of the range, falling back to scalar operations for cleanup.
+        /// </summary>
+        /// <param name="chars">The character span to trim</param>
+        /// <param name="start">The starting position (inclusive) of the range to trim</param>
+        /// <param name="end">The ending position (exclusive) of the range to trim</param>
+        /// <returns>A tuple containing the trimmed start position (inclusive) and end position (exclusive)</returns>
+        private static (int start, int end) TrimWhitespace(ReadOnlySpan<char> chars, int start, int end)
+        {
+            int vecSize = Vector<ushort>.Count;
+
+            // SIMD TrimStart
+            int startTrim = start;
+            int remaining = end - startTrim;
+
+            while (remaining >= vecSize)
+            {
+                var ushortSpan = MemoryMarshal.Cast<char, ushort>(chars.Slice(startTrim, vecSize));
+                var vec = new Vector<ushort>(ushortSpan);
+
+                if (!AllWhitespace(vec))
+                {
+                    // Find first non-whitespace in this vector
+                    for (int k = 0; k < vecSize; k++)
+                    {
+                        if (!IsWhiteSpace((char)ushortSpan[k]))
+                        {
+                            startTrim += k;
+                            remaining = 0;
+                            break;
+                        }
+                    }
+                    break;
+                }
+
+                startTrim += vecSize;
+                remaining -= vecSize;
+            }
+
+            // Scalar cleanup for TrimStart
+            while (startTrim < end && IsWhiteSpace(chars[startTrim]))
+                startTrim++;
+
+            // SIMD TrimEnd
+            int endTrim = end - 1;
+            remaining = endTrim - startTrim + 1;
+
+            while (remaining >= vecSize && endTrim >= startTrim + vecSize - 1)
+            {
+                var ushortSpan = MemoryMarshal.Cast<char, ushort>(chars.Slice(endTrim - vecSize + 1, vecSize));
+                var vec = new Vector<ushort>(ushortSpan);
+
+                if (!AllWhitespace(vec))
+                {
+                    // Find last non-whitespace in this vector
+                    for (int k = vecSize - 1; k >= 0; k--)
+                    {
+                        if (!IsWhiteSpace((char)ushortSpan[k]))
+                        {
+                            endTrim = endTrim - (vecSize - 1 - k);
+                            remaining = 0;
+                            break;
+                        }
+                    }
+                    break;
+                }
+
+                endTrim -= vecSize;
+                remaining -= vecSize;
+            }
+
+            // Scalar cleanup for TrimEnd
+            while (endTrim >= startTrim && IsWhiteSpace(chars[endTrim]))
+                endTrim--;
+
+            return (startTrim, endTrim);
         }
 
         /// <summary>
@@ -171,7 +219,7 @@ namespace DoclingSharp
         /// <returns>An array of whitespace lookup bool values.</returns>
         private static bool[] CreateWhitespaceLookup()
         {
-            var table = new bool[65536]; // all possible UTF-16 chars
+            var table = new bool[65536]; // all UTF-16 chars
             for (int c = 0; c < table.Length; c++)
                 table[c] = char.IsWhiteSpace((char)c);
             return table;
