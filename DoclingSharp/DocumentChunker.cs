@@ -30,7 +30,6 @@ namespace DoclingSharp
         public DocumentChunker(IHttpClientFactory httpClientFactory, IOptions<DoclingOptions> options)
             : base(httpClientFactory, options) { }
 
-
         /// <summary>
         /// Break a string into chunks.
         /// </summary>
@@ -41,12 +40,23 @@ namespace DoclingSharp
             if (string.IsNullOrEmpty(text))
                 return Array.Empty<TextChunk>();
 
+            if (text.Length <= ChunkMaxCharacters) return new List<TextChunk> { new TextChunk(text, 0, text.Length - 1) };
+            if (text.Length <= ChunkMaxCharacters + ChunkCharacterOverlap)
+                return new List<TextChunk>
+                {
+                    new TextChunk(text.Substring(0, ChunkMaxCharacters),0, ChunkMaxCharacters -1),
+                    new TextChunk(text.Substring(ChunkMaxCharacters - ChunkCharacterOverlap), ChunkMaxCharacters - ChunkCharacterOverlap, text.Length -1)
+                };
+
             int len = text.Length;
-            int estChunks = (len / Math.Max(1, ChunkMaxCharacters - ChunkCharacterOverlap)) + 2;
+            int estChunks = (len / Math.Max(1, ChunkMaxCharacters - ChunkCharacterOverlap));
             var result = new List<TextChunk>(estChunks);
 
             var chars = text.AsSpan();
             int i = 0;
+
+            int vecSize = Vector<ushort>.Count;
+            var nlVec = new Vector<ushort>('\n');
 
             while (i < len)
             {
@@ -69,14 +79,14 @@ namespace DoclingSharp
                 var (startTrim, endTrim) = TrimWhitespace(chars, i, cut);
 
                 // Add chunk if valid
-                if (startTrim <= endTrim)
+                if ((startTrim + ChunkCharacterOverlap) < endTrim)
                 {
                     int sliceLen = endTrim - startTrim + 1;
                     result.Add(new TextChunk(text.Substring(startTrim, sliceLen), startTrim, endTrim + 1));
                 }
 
                 // Advance with overlap: next chunk starts at (current_end + 1 - overlap)
-                i = cut + 1 - ChunkCharacterOverlap;
+                i = cut + 1 - ChunkCharacterOverlap - 1;
                 if (i <= startTrim) // Prevent infinite loops
                     i = startTrim + 1;
 
@@ -150,7 +160,7 @@ namespace DoclingSharp
             int startTrim = start;
             int remaining = end - startTrim;
 
-            while (remaining >= vecSize)
+            while (remaining > vecSize)
             {
                 var ushortSpan = MemoryMarshal.Cast<char, ushort>(chars.Slice(startTrim, vecSize));
                 var vec = new Vector<ushort>(ushortSpan);
@@ -182,7 +192,7 @@ namespace DoclingSharp
             int endTrim = end - 1;
             remaining = endTrim - startTrim + 1;
 
-            while (remaining >= vecSize && endTrim >= startTrim + vecSize - 1)
+            while (remaining > vecSize && endTrim > startTrim + vecSize - 1)
             {
                 var ushortSpan = MemoryMarshal.Cast<char, ushort>(chars.Slice(endTrim - vecSize + 1, vecSize));
                 var vec = new Vector<ushort>(ushortSpan);
@@ -190,7 +200,7 @@ namespace DoclingSharp
                 if (!AllWhitespace(vec))
                 {
                     // Find last non-whitespace in this vector
-                    for (int k = vecSize - 1; k >= 0; k--)
+                    for (int k = vecSize - 1; k > 0; k--)
                     {
                         if (!IsWhiteSpace((char)ushortSpan[k]))
                         {
@@ -207,7 +217,7 @@ namespace DoclingSharp
             }
 
             // Scalar cleanup for TrimEnd
-            while (endTrim >= startTrim && IsWhiteSpace(chars[endTrim]))
+            while (endTrim > startTrim && IsWhiteSpace(chars[endTrim]))
                 endTrim--;
 
             return (startTrim, endTrim);
