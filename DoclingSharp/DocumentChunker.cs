@@ -141,16 +141,25 @@ namespace DoclingSharp
                         endTrim--;
                 }
 
-                // --- Add chunk if valid ---
                 if (startTrim <= endTrim)
                 {
                     int sliceLen = endTrim - startTrim + 1;
                     result.Add(new TextChunk(text.Substring(startTrim, sliceLen), startTrim, cut));
                 }
 
-                // advance with overlap
+                // advance
+                if (cut >= len)
+                {
+                    // we consumed the tail, break out
+                    break;
+                }
+
                 i = cut + (ChunkMaxCharacters - ChunkCharacterOverlap);
-                if (i > len) i = len;
+                if (i >= len)
+                {
+                    // ensure we don't miss the last partial bit
+                    i = len;
+                }
             }
 
             return result;
