@@ -1,4 +1,4 @@
-name: Publish NuGet Package
+name: Build and Publish NuGet Package
 
 on:
   push:
@@ -7,14 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-publish:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # needed for git rev-list to work
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
@@ -28,7 +28,7 @@ jobs:
         id: version
         run: |
           major=8
-          minor=$(git rev-list --count origin/main)
+          minor=$(git rev-list --count HEAD)
           patch=${GITHUB_RUN_NUMBER}
           echo "VERSION=$major.$minor.$patch" >> $GITHUB_ENV
           echo "Version = $major.$minor.$patch"
@@ -39,5 +39,28 @@ jobs:
       - name: Pack NuGet
         run: dotnet pack --configuration Release --no-build --output ./nupkg /p:PackageVersion=${{ env.VERSION }}
 
-      - name: Push package
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: nuget-package
+          path: ./nupkg/*.nupkg
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: nuget-package
+          path: ./nupkg
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Push package to NuGet
         run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
